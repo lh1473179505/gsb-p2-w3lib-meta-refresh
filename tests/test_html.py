@@ -817,10 +817,6 @@ class TestGetMetaRefresh:
             "http://evil.example/",
         )
 
-    @pytest.mark.xfail(
-        reason="the tag scan stops at a raw < or > inside a quoted attribute value",
-        strict=True,
-    )
     @pytest.mark.parametrize("quote", ["<", ">"])
     def test_lt_gt_in_quoted_attribute_value(self, quote: str) -> None:
         body = f'<meta data-x="a{quote}b" http-equiv="refresh" content="3;url=/next">'
@@ -828,6 +824,86 @@ class TestGetMetaRefresh:
             3.0,
             "http://example.org/next",
         )
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            '<meta data-x="a>b" http-equiv="refresh" content="3;url=/next">',
+            '<meta data-x="a>b" content="3;url=/next" http-equiv="refresh">',
+        ],
+    )
+    def test_mixed_document_with_quoted_gt(self, meta: str) -> None:
+        # A comment and a <script> hold fake refresh markups that must not
+        # win over the real <meta> that follows them, and the ">" inside the
+        # quoted data-x value must not truncate the real tag.
+        baseurl = "http://example.org"
+        body = (
+            "<!--<meta http-equiv=\"refresh\" content=\"0;url=http://comment.example/\">-->"
+            "<script>var s = '<meta http-equiv=\"refresh\" "
+            "content=\"0;url=http://script.example/\">';</script>"
+            + meta
+        )
+        assert get_meta_refresh(body, baseurl) == (3.0, "http://example.org/next")
+        # The bytes pre-scan and the scan of the decoded document must agree.
+        assert get_meta_refresh(body.encode(), baseurl) == (
+            3.0,
+            "http://example.org/next",
+        )
+
+    def test_mixed_document_script_meta_with_ignore_tags_empty(self) -> None:
+        # With ignore_tags=() the <meta> inside the <script> is markup again,
+        # and the one in the comment still is not.
+        baseurl = "http://example.org"
+        body = (
+            "<!--<meta http-equiv=\"refresh\" content=\"0;url=http://comment.example/\">-->"
+            "<script>var s = '<meta http-equiv=\"refresh\" "
+            "content=\"0;url=http://script.example/\">';</script>"
+            '<meta data-x="a>b" http-equiv="refresh" content="3;url=/next">'
+        )
+        assert get_meta_refresh(body, baseurl, ignore_tags=()) == (
+            0.0,
+            "http://script.example/",
+        )
+
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_gt_in_refresh_url(self, quote: str) -> None:
+        # A ">" inside the quoted content URL is part of the URL, not the end
+        # of the tag; safe_url_string percent-encodes it.
+        baseurl = "http://example.org"
+        body = (
+            "<meta http-equiv='refresh' "
+            f"content={quote}0;url=http://ex.com/a>b{quote}>"
+        )
+        expected = (0.0, "http://ex.com/a%3Eb")
+        assert get_meta_refresh(body, baseurl) == expected
+        assert get_meta_refresh(body.encode(), baseurl) == expected
+
+    def test_bytes_and_str_scans_agree_on_quoted_gt(self) -> None:
+        # The bytes pre-scan must not rule out a refresh that the scan of the
+        # decoded document finds, nor the other way around.
+        baseurl = "http://example.org"
+        bodies = [
+            '<meta data-x="a>b" http-equiv="refresh" content="3;url=/next">',
+            '<meta content="3;url=/next" data-x="a>b" http-equiv="refresh">',
+            '<meta http-equiv="refresh" content="0;url=http://ex.com/a>b">',
+            "<meta http-equiv='refresh' content='0;url=http://ex.com/a>b'>",
+            '<meta data-x="a>b" http-equiv="content-type" content="text/html">',
+        ]
+        for body in bodies:
+            assert get_meta_refresh(body.encode(), baseurl) == get_meta_refresh(
+                body, baseurl
+            )
+
+    def test_no_catastrophic_backtracking_quoted_gt(self) -> None:
+        # A long run of quoted ">" characters must be skipped in one pass.
+        evil = '<meta data-x="' + "a>b" * 100000 + '"'
+        start = time.process_time()
+        assert get_meta_refresh(evil, "http://example.org") == (None, None)
+        assert get_meta_refresh(
+            evil + ' http-equiv="refresh" content="3;url=/next">',
+            "http://example.org",
+        ) == (3.0, "http://example.org/next")
+        assert time.process_time() - start < 2
 
     def test_get_meta_refresh_no_catastrophic_backtracking(self):
         prefix = "<meta " * 80000

@@ -85,7 +85,17 @@ def _meta_scan_source(ignore_tags: tuple[str, ...]) -> str:
     #
     # The <meta> body is matched without the closing angle bracket, which is
     # not required: a tag left unterminated by the next "<" or by the end of
-    # the text is still parsed, as browsers do.
+    # the text is still parsed, as browsers do. A ">" or "<" inside a quoted
+    # attribute value (e.g. data-x="a>b", or a refresh URL such as
+    # content="0;url=http://example.com/a>b") is part of the value and must
+    # not end the tag, so the body alternates runs of plain characters with
+    # whole quoted values. The three alternatives start on disjoint character
+    # sets and each consumes at least one character, so the repetition is a
+    # straight-line scan that cannot backtrack on long tags; a quote missing
+    # its mate runs to the end of the text, as an unterminated quoted value
+    # does in a browser. The same source is compiled for bytes and for text,
+    # keeping the pre-scan of the bytes and the scan of the decoded document
+    # in agreement.
     alternatives = [r"<!--[^-]*(?:-(?!->)[^-]*)*(?:-->|$)"]
     if ignore_tags:
         tags = "|".join(re.escape(tag) for tag in ignore_tags)
@@ -93,7 +103,9 @@ def _meta_scan_source(ignore_tags: tuple[str, ...]) -> str:
             rf"<(?P<t>{tags})\b[^<>]*>[^<]*(?:<(?!/(?P=t)[\s/>])[^<]*)*"
             r"(?:</(?P=t)[^<>]*>?|$)"
         )
-    alternatives.append(r"<meta\s(?P<attrs>[^<>]*)")
+    alternatives.append(
+        r"<meta\s(?P<attrs>(?:[^<>\"']+|\"[^\"]*(?:\"|$)|'[^']*(?:'|$))*)"
+    )
     return "|".join(alternatives)
 
 
