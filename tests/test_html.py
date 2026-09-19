@@ -817,10 +817,6 @@ class TestGetMetaRefresh:
             "http://evil.example/",
         )
 
-    @pytest.mark.xfail(
-        reason="the tag scan stops at a raw < or > inside a quoted attribute value",
-        strict=True,
-    )
     @pytest.mark.parametrize("quote", ["<", ">"])
     def test_lt_gt_in_quoted_attribute_value(self, quote: str) -> None:
         body = f'<meta data-x="a{quote}b" http-equiv="refresh" content="3;url=/next">'
@@ -828,6 +824,86 @@ class TestGetMetaRefresh:
             3.0,
             "http://example.org/next",
         )
+
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_gt_in_refresh_url(self, quote: str) -> None:
+        # A ">" inside the quoted content URL is part of the URL, not the end
+        # of the tag; safe_url_string percent-encodes it.
+        body = (
+            f"<meta http-equiv={quote}refresh{quote} "
+            f"content={quote}0;url=http://ex.com/a>b{quote}>"
+        )
+        assert get_meta_refresh(body, "http://example.org") == (
+            0.0,
+            "http://ex.com/a%3Eb",
+        )
+
+    @pytest.mark.parametrize("as_bytes", [False, True])
+    def test_mixed_document(self, as_bytes: bool) -> None:
+        # A comment and a <script> both hold a fake refresh, a quoted
+        # attribute value holds a ">", and the real <meta> comes last: the
+        # fakes must not win and the ">" must not hide the real tag. The
+        # bytes pre-scan and the scan of the decoded text must agree.
+        baseurl = "http://example.org"
+        bodies = [
+            (
+                "<!--<meta http-equiv='refresh' content='0;url=/commented'>-->"
+                "<script>var s = '<meta http-equiv=\"refresh\" "
+                'content="0;url=/scripted">\';</script>'
+                '<meta data-x="a>b" http-equiv="refresh" content="3;url=/next">'
+            ),
+            # the same, with the content attribute before http-equiv
+            (
+                "<!--<meta http-equiv='refresh' content='0;url=/commented'>-->"
+                "<script>var s = '<meta http-equiv=\"refresh\" "
+                'content="0;url=/scripted">\';</script>'
+                '<meta data-x="a>b" content="3;url=/next" http-equiv="refresh">'
+            ),
+        ]
+        for body in bodies:
+            text = body.encode() if as_bytes else body
+            assert get_meta_refresh(text, baseurl) == (
+                3.0,
+                "http://example.org/next",
+            )
+            # With nothing ignored, the refresh inside the <script> text is
+            # a real <meta> tag and wins by coming first.
+            assert get_meta_refresh(text, baseurl, ignore_tags=()) == (
+                0.0,
+                "http://example.org/scripted",
+            )
+
+    @pytest.mark.parametrize("as_bytes", [False, True])
+    def test_mixed_document_gt_in_refresh_url(self, as_bytes: bool) -> None:
+        baseurl = "http://example.org"
+        body = (
+            "<!--<meta http-equiv='refresh' content='0;url=/commented'>-->"
+            "<script>var s = '<meta http-equiv=\"refresh\" "
+            'content="0;url=/scripted">\';</script>'
+            '<meta data-x="a>b" http-equiv="refresh" '
+            'content="0;url=http://ex.com/a>b">'
+        )
+        text = body.encode() if as_bytes else body
+        assert get_meta_refresh(text, baseurl) == (0.0, "http://ex.com/a%3Eb")
+
+    @pytest.mark.parametrize("as_bytes", [False, True])
+    def test_no_catastrophic_backtracking_quoted_values(self, as_bytes: bool) -> None:
+        # A long run of ">"-holding quoted values before the refresh must be
+        # scanned once, not retried from every position.
+        prefix = '<meta data-x="a>b" ' * 20000
+        start = time.process_time()
+        for text in [prefix, prefix.encode()] if as_bytes else [prefix]:
+            assert get_meta_refresh(text) == (None, None)
+            assert get_meta_refresh(
+                text
+                + (
+                    b'<meta http-equiv="refresh" content="3; url=/next">'
+                    if isinstance(text, bytes)
+                    else '<meta http-equiv="refresh" content="3; url=/next">'
+                ),
+                "http://example.org",
+            ) == (3.0, "http://example.org/next")
+        assert time.process_time() - start < 2
 
     def test_get_meta_refresh_no_catastrophic_backtracking(self):
         prefix = "<meta " * 80000

@@ -85,7 +85,13 @@ def _meta_scan_source(ignore_tags: tuple[str, ...]) -> str:
     #
     # The <meta> body is matched without the closing angle bracket, which is
     # not required: a tag left unterminated by the next "<" or by the end of
-    # the text is still parsed, as browsers do.
+    # the text is still parsed, as browsers do. Angle brackets inside a
+    # quoted attribute value (a data-x="a>b", or the ">" of a refresh target
+    # like content="0;url=http://ex.com/a>b") do not close the tag, so the
+    # body is matched as quoted values, which may hold "<" and ">", and runs
+    # of other characters, which may not. The quoted alternatives and the run
+    # are disjoint and each run is pinned to its maximal length, so a tag
+    # that never closes cannot make the match backtrack.
     alternatives = [r"<!--[^-]*(?:-(?!->)[^-]*)*(?:-->|$)"]
     if ignore_tags:
         tags = "|".join(re.escape(tag) for tag in ignore_tags)
@@ -93,7 +99,9 @@ def _meta_scan_source(ignore_tags: tuple[str, ...]) -> str:
             rf"<(?P<t>{tags})\b[^<>]*>[^<]*(?:<(?!/(?P=t)[\s/>])[^<]*)*"
             r"(?:</(?P=t)[^<>]*>?|$)"
         )
-    alternatives.append(r"<meta\s(?P<attrs>[^<>]*)")
+    alternatives.append(
+        r"<meta\s(?P<attrs>(?:\"[^\"]*\"?|\'[^\']*\'?|[^<>\"'])*)"
+    )
     return "|".join(alternatives)
 
 

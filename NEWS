@@ -1,6 +1,17 @@
 w3lib release notes
 ===================
 
+unreleased
+----------
+
+- :func:`~w3lib.html.get_meta_refresh` no longer truncates a ``<meta>`` tag
+  at a ``<`` or ``>`` inside a quoted attribute value (e.g.
+  ``data-x="a>b"``) or inside the refresh target URL itself
+  (``content="0;url=http://ex.com/a>b"``), so such refreshes are found
+  instead of returning ``(None, None)``. The scan stays linear-time, and the
+  bytes pre-scan and the scan of the decoded text now agree on whether a
+  refresh is present.
+
 2.4.1 (2026-03-20)
 ------------------
 
